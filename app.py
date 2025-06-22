@@ -1,0 +1,89 @@
+from flask import Flask, jsonify
+import requests
+from datetime import datetime
+import time
+
+app = Flask(__name__)
+
+# Simple rate limiting
+last_requests = []
+
+def rate_limit():
+    global last_requests
+    now = time.time()
+    last_requests = [req_time for req_time in last_requests if now - req_time < 10]
+    
+    if len(last_requests) >= 85:
+        return False
+    
+    last_requests.append(now)
+    return True
+
+@app.route('/jewish-info', methods=['GET'])
+def get_jewish_info():
+    """Get current Hebrew date and Torah portion"""
+    if not rate_limit():
+        return jsonify({
+            'error': 'Please try again in a moment.',
+            'success': False
+        }), 429
+    
+    try:
+        now = datetime.now()
+        
+        # Get data from Hebcal
+        params = {
+            'v': '1',
+            'cfg': 'json',
+            's': 'on',  # Torah readings
+            'maj': 'on',  # Major holidays to get Hebrew dates
+            'year': now.year,
+            'month': now.month
+        }
+        
+        response = requests.get('https://www.hebcal.com/hebcal', params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Find current parsha and Hebrew date
+        parsha = "Parsha information not available"
+        hebrew_date = "Hebrew date not available"
+        today_str = now.strftime('%Y-%m-%d')
+        
+        # Look through events
+        for event in data.get('items', []):
+            event_date = event.get('date', '')
+            event_title = event.get('title', '')
+            
+            # Get Hebrew date for today or close to today
+            if event_date and abs((datetime.strptime(event_date, '%Y-%m-%d') - now).days) <= 1:
+                hebrew_date = event.get('hdate', hebrew_date)
+            
+            # Get current week's parsha
+            if 'parashat' in event_title.lower() or 'parashah' in event_title.lower():
+                event_date_obj = datetime.strptime(event_date, '%Y-%m-%d')
+                days_diff = (event_date_obj - now).days
+                if -7 <= days_diff <= 7:  # Within this week
+                    parsha = event_title
+        
+        return jsonify({
+            'success': True,
+            'hebrew_date': hebrew_date,
+            'parsha': parsha,
+            'gregorian_date': today_str
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': 'Unable to get Jewish calendar information',
+            'hebrew_date': 'Not available',
+            'parsha': 'Not available'
+        }), 500
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'ok'})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
